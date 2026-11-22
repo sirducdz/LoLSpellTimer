@@ -152,18 +152,10 @@ pub fn end_window_drag(window: &WebviewWindow, drag: &SharedDrag) {
     }
 }
 
-pub fn resize_for_layout(window: &WebviewWindow, layout: &str, collapsed: bool) {
-    let (logical_w, logical_h) = if collapsed {
-        (232.0_f64, 36.0_f64)
-    } else if layout == "horizontal" {
-        (710.0_f64, 102.0_f64)
-    } else {
-        (280.0_f64, 286.0_f64)
-    };
-
+pub fn fit_window_logical_size(window: &WebviewWindow, logical_w: f64, logical_h: f64) {
     let scale = window.scale_factor().unwrap_or(1.0);
-    let phys_w = (logical_w * scale).round() as i32;
-    let phys_h = (logical_h * scale).round() as i32;
+    let phys_w = (logical_w.max(60.0) * scale).round() as i32;
+    let phys_h = (logical_h.max(20.0) * scale).round() as i32;
 
     if let Ok(raw) = window.hwnd() {
         let hwnd = HWND(raw.0);
@@ -179,6 +171,18 @@ pub fn resize_for_layout(window: &WebviewWindow, layout: &str, collapsed: bool) 
             );
         }
     }
+}
+
+pub fn resize_for_layout(window: &WebviewWindow, layout: &str, collapsed: bool) {
+    let (logical_w, logical_h) = if collapsed {
+        (100.0_f64, 24.0_f64)
+    } else if layout == "horizontal" {
+        (360.0_f64, 62.0_f64)
+    } else {
+        (124.0_f64, 152.0_f64)
+    };
+
+    fit_window_logical_size(window, logical_w, logical_h);
 
     let mut settings = load_settings();
     settings.layout = layout.to_string();

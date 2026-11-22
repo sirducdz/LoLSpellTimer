@@ -12,8 +12,9 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use win_overlay::{
-    apply_noactivate_topmost, begin_window_drag, end_window_drag, reset_to_default_position,
-    resize_for_layout, restore_saved_position, update_window_drag, DragTracker, SharedDrag,
+    apply_noactivate_topmost, begin_window_drag, end_window_drag, fit_window_logical_size,
+    reset_to_default_position, resize_for_layout, restore_saved_position, update_window_drag,
+    DragTracker, SharedDrag,
 };
 
 pub struct TimerSharedState {
@@ -45,6 +46,22 @@ fn cmd_save_opacity(opacity: f64) {
     let mut s = load_settings();
     s.opacity = opacity.clamp(0.4, 1.0);
     save_settings(&s);
+}
+
+#[tauri::command]
+fn cmd_save_scale(scale: String) {
+    let mut s = load_settings();
+    s.scale = match scale.as_str() {
+        "S" | "M" | "L" => scale,
+        _ => "S".to_string(),
+    };
+    save_settings(&s);
+}
+
+#[tauri::command]
+fn cmd_fit_window_size(window: WebviewWindow, width: f64, height: f64) {
+    fit_window_logical_size(&window, width, height);
+    apply_noactivate_topmost(&window);
 }
 
 #[tauri::command]
@@ -154,6 +171,8 @@ pub fn run() {
             cmd_get_initial_state,
             cmd_set_layout_and_collapse,
             cmd_save_opacity,
+            cmd_save_scale,
+            cmd_fit_window_size,
             cmd_begin_drag,
             cmd_update_drag,
             cmd_end_drag,

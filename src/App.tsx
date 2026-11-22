@@ -22,6 +22,44 @@ interface ActiveTimer {
 }
 
 type TimerSlotKey = "D" | "F" | "R";
+type OverlayScale = "S" | "M" | "L";
+
+const SCALE_METRICS: Record<
+  OverlayScale,
+  {
+    iconPx: number;
+    avatarPx: number;
+    cdText: string;
+    posText: string;
+    gapPx: number;
+    padPx: number;
+  }
+> = {
+  S: {
+    iconPx: 22,
+    avatarPx: 22,
+    cdText: "text-[9.5px]",
+    posText: "text-[8px]",
+    gapPx: 2,
+    padPx: 3,
+  },
+  M: {
+    iconPx: 26,
+    avatarPx: 26,
+    cdText: "text-[10.5px]",
+    posText: "text-[8.5px]",
+    gapPx: 3,
+    padPx: 4,
+  },
+  L: {
+    iconPx: 30,
+    avatarPx: 30,
+    cdText: "text-[11.5px]",
+    posText: "text-[9px]",
+    gapPx: 3,
+    padPx: 5,
+  },
+};
 
 function calcCd(baseCd: number, haste: number): number {
   if (baseCd <= 0) return 0;
@@ -72,13 +110,16 @@ function shortSpellLabel(spellId: string, nameVi: string): string {
 function App() {
   const [matchState, setMatchState] = useState<LiveMatchState | null>(null);
   const [layout, setLayout] = useState<"vertical" | "horizontal">("vertical");
+  const [scale, setScale] = useState<OverlayScale>("S");
   const [collapsed, setCollapsed] = useState(false);
-  const [opacity, setOpacity] = useState(0.92);
+  const [opacity, setOpacity] = useState(0.85);
   const [timers, setTimers] = useState<Record<string, ActiveTimer>>({});
   const [cosmicOverrides, setCosmicOverrides] = useState<Record<number, boolean>>({});
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [copiedNotice, setCopiedNotice] = useState(false);
 
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const lastFitRef = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
   const prevInGameRef = useRef<boolean | null>(null);
   const prevGameTimeRef = useRef<number>(0);
   const lastSyncRef = useRef<{ gameTimeSecs: number; atEpochMs: number }>({
@@ -91,8 +132,13 @@ function App() {
     invoke<InitialPayload>("cmd_get_initial_state").then((payload) => {
       setMatchState(payload.matchState);
       const l = payload.settings.layout === "horizontal" ? "horizontal" : "vertical";
+      const s =
+        payload.settings.scale === "M" || payload.settings.scale === "L"
+          ? payload.settings.scale
+          : "S";
       setLayout(l);
-      setOpacity(payload.settings.opacity || 0.92);
+      setScale(s);
+      setOpacity(payload.settings.opacity || 0.85);
       prevInGameRef.current = payload.matchState.inGame;
       lastSyncRef.current = {
         gameTimeSecs: payload.matchState.gameTimeSecs,
@@ -106,7 +152,6 @@ function App() {
         gameTimeSecs: next.gameTimeSecs,
         atEpochMs: Date.now(),
       };
-      // Reset timers if transitioning between demo <-> live or a new match started
       if (
         prevInGameRef.current !== null &&
         (prevInGameRef.current !== next.inGame ||
@@ -124,6 +169,32 @@ function App() {
       unlisten.then((fn) => fn());
     };
   }, []);
+
+  // Auto-fit window strictly around the compact micro-overlay content
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+
+    const fit = () => {
+      const rect = el.getBoundingClientRect();
+      const w = Math.ceil(rect.width);
+      const h = Math.ceil(rect.height);
+      if (
+        w > 20 &&
+        h > 16 &&
+        (Math.abs(w - lastFitRef.current.w) >= 2 ||
+          Math.abs(h - lastFitRef.current.h) >= 2)
+      ) {
+        lastFitRef.current = { w, h };
+        invoke("cmd_fit_window_size", { width: w, height: h });
+      }
+    };
+
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [matchState, layout, scale, collapsed]);
 
   // 250ms tick for crisp countdown & auto-cleanup
   useEffect(() => {
@@ -267,7 +338,7 @@ function App() {
         : "Chưa có phép hoặc chiêu cuối nào đang đếm.";
     await invoke("cmd_copy_text", { text: out });
     setCopiedNotice(true);
-    window.setTimeout(() => setCopiedNotice(false), 1600);
+    window.setTimeout(() => setCopiedNotice(false), 1500);
   };
 
   const toggleLayout = async () => {
@@ -277,6 +348,12 @@ function App() {
     await invoke("cmd_set_layout_and_collapse", { layout: next, collapsed: false });
   };
 
+  const cycleScale = async () => {
+    const next: OverlayScale = scale === "S" ? "M" : scale === "M" ? "L" : "S";
+    setScale(next);
+    await invoke("cmd_save_scale", { scale: next });
+  };
+
   const toggleCollapse = async () => {
     const next = !collapsed;
     setCollapsed(next);
@@ -284,10 +361,12 @@ function App() {
   };
 
   const cycleOpacity = async () => {
-    const next = opacity > 0.86 ? 0.78 : opacity > 0.68 ? 0.58 : 0.92;
+    const next = opacity > 0.8 ? 0.68 : opacity > 0.58 ? 0.48 : 0.85;
     setOpacity(next);
     await invoke("cmd_save_opacity", { opacity: next });
   };
+
+  const m = SCALE_METRICS[scale];
 
   const renderSlotButton = (enemy: EnemyTimerRow, slot: TimerSlotKey) => {
     const key = `${enemy.slotIndex}-${slot}`;
@@ -306,12 +385,10 @@ function App() {
     const fallbackLabel = slot === "R" ? "R" : slot;
     const tooltip =
       slot === "D"
-        ? `${enemy.spellD.nameVi} (${effCd}s) — Trái: Đếm / -5s | Phải: Reset`
+        ? `${enemy.championName} • ${enemy.spellD.nameVi} (${effCd}s) | Trái: Đếm/-5s | Phải: Reset`
         : slot === "F"
-        ? `${enemy.spellF.nameVi} (${effCd}s) — Trái: Đếm / -5s | Phải: Reset`
-        : `${enemy.ult.name} Cấp ${enemy.ult.currentRank} (${effCd}s) — Trái: Đếm / -5s | Phải: Reset`;
-
-    const sizeClass = layout === "horizontal" ? "w-9 h-9" : "w-10 h-10";
+        ? `${enemy.championName} • ${enemy.spellF.nameVi} (${effCd}s) | Trái: Đếm/-5s | Phải: Reset`
+        : `${enemy.championName} • ${enemy.ult.name} (${effCd}s) | Trái: Đếm/-5s | Phải: Reset`;
 
     return (
       <button
@@ -320,14 +397,15 @@ function App() {
         title={tooltip}
         onClick={() => handleTimerClick(enemy, slot)}
         onContextMenu={(e) => handleTimerRightClick(e, enemy, slot)}
-        className={`relative ${sizeClass} rounded overflow-hidden border transition-transform active:scale-95 shrink-0 ${
+        style={{ width: m.iconPx, height: m.iconPx }}
+        className={`relative rounded-[3px] overflow-hidden border transition-transform active:scale-95 shrink-0 ${
           isUrgent
             ? "timer-urgent border-[#E84057]"
             : remaining > 0
-            ? "border-[#C8AA6E]/80"
+            ? "border-[#C8AA6E]"
             : slot === "R"
-            ? "border-[#0AC8B9]/60 hover:border-[#0AC8B9]"
-            : "border-[#C8AA6E]/45 hover:border-[#F0E6D2]"
+            ? "border-[#0AC8B9]/65 hover:border-[#0AC8B9]"
+            : "border-[#C8AA6E]/35 hover:border-[#F0E6D2]"
         } bg-[#010A13]`}
       >
         {iconUrl ? (
@@ -335,50 +413,32 @@ function App() {
             src={iconUrl}
             alt={fallbackLabel}
             className={`w-full h-full object-cover ${
-              remaining > 0 ? "brightness-[0.35] grayscale-[40%]" : "brightness-100"
+              remaining > 0 ? "brightness-[0.28] grayscale-[45%]" : "brightness-100"
             }`}
             draggable={false}
           />
         ) : (
-          <div className="w-full h-full flex items-center justify-center text-[11px] font-bold text-[#C8AA6E]">
+          <div className="w-full h-full flex items-center justify-center text-[9px] font-bold text-[#C8AA6E]">
             {fallbackLabel}
           </div>
         )}
 
-        {/* Slot tag R / D / F when ready */}
-        {remaining === 0 && (
-          <>
-            <span
-              className={`absolute top-0 left-0 px-1 text-[8px] font-bold leading-tight bg-black/75 ${
-                slot === "R" ? "text-[#0AC8B9]" : "text-[#C8AA6E]"
-              }`}
-            >
-              {slot}
-            </span>
-            <span className="absolute bottom-0 right-0 px-1 text-[9px] font-bold leading-tight bg-black/80 text-[#F0E6D2]">
-              {effCd}s
-            </span>
-          </>
-        )}
-
-        {/* Countdown text */}
         {remaining > 0 && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <div className="absolute inset-0 flex items-center justify-center">
             <span
-              className={`font-black leading-none tracking-tight ${
-                remaining >= 60 ? "text-[11px]" : "text-[13px]"
-              } ${isUrgent ? "text-[#FF6B7F]" : "text-[#F0E6D2]"}`}
-              style={{ textShadow: "0 1px 3px #000" }}
+              className={`font-black leading-none tracking-tighter ${m.cdText} ${
+                isUrgent ? "text-[#FF6B7F]" : "text-[#F0E6D2]"
+              }`}
+              style={{ textShadow: "0 1px 2px #000, 0 0 3px #000" }}
             >
               {formatShortRemaining(remaining)}
             </span>
           </div>
         )}
 
-        {/* -5s quick feedback */}
         {showMinus5 && (
-          <span className="absolute top-0 right-0.5 text-[9px] font-black text-[#0AC8B9]">
-            -5s
+          <span className="absolute -top-0.5 right-0 text-[7px] font-black text-[#0AC8B9]">
+            -5
           </span>
         )}
       </button>
@@ -391,70 +451,77 @@ function App() {
 
   return (
     <div
-      className="w-full h-full rounded-md border border-[#C8AA6E]/60 flex flex-col overflow-hidden shadow-2xl"
+      ref={boxRef}
+      className="inline-flex flex-col w-max h-max rounded border border-[#C8AA6E]/40 overflow-hidden group"
       style={{
-        backgroundColor: `rgba(5, 14, 26, ${opacity})`,
+        backgroundColor: `rgba(4, 10, 20, ${opacity})`,
       }}
     >
-      {/* Compact Header / Drag Handle */}
-      <div className="h-[30px] px-2 bg-[#091428]/95 border-b border-[#C8AA6E]/30 flex items-center justify-between gap-1 shrink-0">
+      {/* Ultra-Compact Header (18px) */}
+      <div className="h-[18px] px-1 bg-[#091428]/90 border-b border-[#C8AA6E]/25 flex items-center justify-between gap-1">
         <div
           onMouseDown={() => {
             draggingRef.current = true;
             invoke("cmd_begin_drag");
           }}
-          className="flex items-center gap-1 cursor-move flex-1 min-w-0 py-1"
-          title="Kéo thả để di chuyển vị trí"
+          className="flex items-center gap-0.5 cursor-move min-w-0 py-0.5"
+          title="Kéo thả để đặt vị trí"
         >
-          <GripVertical className="w-3.5 h-3.5 text-[#C8AA6E] shrink-0" />
-          {matchState.inGame ? (
-            <span className="text-[10px] font-bold text-[#0AC8B9] truncate">
-              ● LIVE {formatGameClock(currentEstimatedGameSecs)}
-            </span>
-          ) : (
-            <span className="text-[10px] font-bold text-[#C8AA6E] truncate">
-              ● XEM THỬ
-            </span>
-          )}
+          <GripVertical className="w-2.5 h-2.5 text-[#C8AA6E]/80 shrink-0" />
+          <span
+            className={`text-[9px] font-bold leading-none ${
+              matchState.inGame ? "text-[#0AC8B9]" : "text-[#C8AA6E]"
+            }`}
+          >
+            {matchState.inGame ? formatGameClock(currentEstimatedGameSecs) : "DEMO"}
+          </span>
         </div>
 
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex items-center gap-[1px] shrink-0 opacity-60 group-hover:opacity-100 transition-opacity">
           {!collapsed && (
             <>
               <button
                 type="button"
                 onClick={handleCopyTimers}
                 title="Copy mốc giờ hồi vào Clipboard"
-                className="px-1.5 py-0.5 rounded bg-[#010A13] border border-[#C8AA6E]/40 hover:border-[#0AC8B9] text-[10px] font-semibold text-[#F0E6D2] flex items-center gap-1"
+                className="p-0.5 rounded hover:bg-[#C8AA6E]/20 text-[#C8AA6E]"
               >
                 {copiedNotice ? (
-                  <Check className="w-3 h-3 text-[#0AC8B9]" />
+                  <Check className="w-2.5 h-2.5 text-[#0AC8B9]" />
                 ) : (
-                  <Copy className="w-3 h-3 text-[#C8AA6E]" />
+                  <Copy className="w-2.5 h-2.5" />
                 )}
-                <span>{copiedNotice ? "Đã chép" : "Copy"}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={cycleScale}
+                title={`Đổi kích cỡ (Hiện tại: ${scale})`}
+                className="px-0.5 text-[8px] font-black leading-none text-[#F0E6D2] hover:text-[#0AC8B9] rounded hover:bg-[#C8AA6E]/20"
+              >
+                {scale}
               </button>
 
               <button
                 type="button"
                 onClick={toggleLayout}
-                title={layout === "vertical" ? "Chuyển sang Thanh Ngang" : "Chuyển sang Thanh Dọc"}
-                className="p-1 rounded hover:bg-[#C8AA6E]/15 text-[#C8AA6E]"
+                title={layout === "vertical" ? "Đổi sang Ngang" : "Đổi sang Dọc"}
+                className="p-0.5 rounded hover:bg-[#C8AA6E]/20 text-[#C8AA6E]"
               >
                 {layout === "vertical" ? (
-                  <Columns2 className="w-3.5 h-3.5" />
+                  <Columns2 className="w-2.5 h-2.5" />
                 ) : (
-                  <Rows3 className="w-3.5 h-3.5" />
+                  <Rows3 className="w-2.5 h-2.5" />
                 )}
               </button>
 
               <button
                 type="button"
                 onClick={cycleOpacity}
-                title={`Độ mờ: ${Math.round(opacity * 100)}% (Bấm để đổi)`}
-                className="p-1 rounded hover:bg-[#C8AA6E]/15 text-[#A09B8C] hover:text-[#F0E6D2]"
+                title={`Độ mờ: ${Math.round(opacity * 100)}%`}
+                className="p-0.5 rounded hover:bg-[#C8AA6E]/20 text-[#A09B8C] hover:text-[#F0E6D2]"
               >
-                <Eye className="w-3.5 h-3.5" />
+                <Eye className="w-2.5 h-2.5" />
               </button>
             </>
           )}
@@ -462,55 +529,51 @@ function App() {
           <button
             type="button"
             onClick={toggleCollapse}
-            title={collapsed ? "Mở rộng bảng đếm" : "Thu gọn thành thanh nhỏ"}
-            className="p-1 rounded hover:bg-[#C8AA6E]/15 text-[#C8AA6E]"
+            title={collapsed ? "Mở rộng" : "Thu gọn"}
+            className="p-0.5 rounded hover:bg-[#C8AA6E]/20 text-[#C8AA6E]"
           >
-            {collapsed ? <Plus className="w-3.5 h-3.5" /> : <Minus className="w-3.5 h-3.5" />}
+            {collapsed ? <Plus className="w-2.5 h-2.5" /> : <Minus className="w-2.5 h-2.5" />}
           </button>
 
           <button
             type="button"
             onClick={() => invoke("cmd_quit_timer")}
-            title="Đóng LoL Spell Timer"
-            className="p-1 rounded hover:bg-[#E84057]/20 text-[#A09B8C] hover:text-[#E84057]"
+            title="Đóng"
+            className="p-0.5 rounded hover:bg-[#E84057]/25 text-[#A09B8C] hover:text-[#E84057]"
           >
-            <X className="w-3.5 h-3.5" />
+            <X className="w-2.5 h-2.5" />
           </button>
         </div>
       </div>
 
-      {/* Body */}
+      {/* Micro Body */}
       {!collapsed && (
         <div
-          className={`flex-1 p-1.5 ${
-            layout === "horizontal"
-              ? "grid grid-cols-5 gap-1.5 items-center"
-              : "flex flex-col justify-between gap-1"
-          }`}
+          style={{ padding: m.padPx, gap: layout === "horizontal" ? m.gapPx + 2 : m.gapPx }}
+          className={layout === "horizontal" ? "flex items-center" : "flex flex-col"}
         >
           {matchState.enemies.map((enemy) => {
             const cosmic = isCosmicEnabled(enemy);
+
             if (layout === "horizontal") {
               return (
                 <div
                   key={enemy.slotIndex}
-                  className="bg-[#091428]/70 border border-[#C8AA6E]/25 rounded px-1.5 py-1 flex flex-col items-center gap-1"
+                  style={{ gap: m.gapPx }}
+                  className="flex flex-col items-center bg-[#091428]/55 rounded px-[2px] py-[2px] border border-[#C8AA6E]/20"
                 >
                   <div className="w-full flex items-center justify-between gap-1">
-                    <div className="flex items-center gap-1 min-w-0">
+                    <div className="flex items-center gap-0.5">
                       {enemy.championIconUrl ? (
                         <img
                           src={enemy.championIconUrl}
                           alt={enemy.championName}
-                          className="w-5 h-5 rounded-full border border-[#C8AA6E]/70 shrink-0"
+                          style={{ width: 14, height: 14 }}
+                          className="rounded-full border border-[#C8AA6E]/70 shrink-0"
                           draggable={false}
                         />
-                      ) : (
-                        <div className="w-5 h-5 rounded-full bg-[#010A13] border border-[#C8AA6E]/70 text-[9px] flex items-center justify-center">
-                          {enemy.championName.slice(0, 2)}
-                        </div>
-                      )}
-                      <span className="text-[10px] font-bold text-[#F0E6D2] truncate">
+                      ) : null}
+                      <span className={`${m.posText} font-bold text-[#C8AA6E] leading-none`}>
                         {enemy.position}
                       </span>
                     </div>
@@ -524,19 +587,17 @@ function App() {
                       }
                       title={
                         cosmic
-                          ? "Đang bật Ngọc Thấu Thị Vũ Trụ (+18 Haste Spell)"
-                          : "Bấm để bật Ngọc Thấu Thị Vũ Trụ (+18 Haste Spell)"
+                          ? "Thấu Thị Vũ Trụ (+18 Haste Spell): ĐANG BẬT"
+                          : "Bấm bật Thấu Thị Vũ Trụ (+18 Haste Spell)"
                       }
-                      className={`p-0.5 rounded border ${
-                        cosmic
-                          ? "bg-[#0AC8B9]/25 border-[#0AC8B9] text-[#0AC8B9]"
-                          : "bg-[#010A13]/70 border-[#C8AA6E]/20 text-[#5B5A56] hover:text-[#C8AA6E]"
+                      className={`p-[1px] rounded ${
+                        cosmic ? "text-[#0AC8B9]" : "text-[#5B5A56] hover:text-[#C8AA6E]"
                       }`}
                     >
                       <Zap className="w-2.5 h-2.5" />
                     </button>
                   </div>
-                  <div className="flex items-center gap-1">
+                  <div style={{ gap: m.gapPx }} className="flex items-center">
                     {renderSlotButton(enemy, "D")}
                     {renderSlotButton(enemy, "F")}
                     {renderSlotButton(enemy, "R")}
@@ -545,70 +606,63 @@ function App() {
               );
             }
 
-            // Vertical Row
+            // Micro Vertical Row: [Avatar] [D] [F] [R] [⚡]
             return (
               <div
                 key={enemy.slotIndex}
-                className="bg-[#091428]/70 border border-[#C8AA6E]/25 rounded px-2 py-1 flex items-center justify-between gap-1.5"
+                style={{ gap: m.gapPx }}
+                className="flex items-center"
               >
-                <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                  <div className="relative shrink-0">
-                    {enemy.championIconUrl ? (
-                      <img
-                        src={enemy.championIconUrl}
-                        alt={enemy.championName}
-                        className="w-9 h-9 rounded-full border border-[#C8AA6E] object-cover"
-                        draggable={false}
-                      />
-                    ) : (
-                      <div className="w-9 h-9 rounded-full bg-[#010A13] border border-[#C8AA6E] text-[10px] flex items-center justify-center font-bold">
-                        {enemy.championName.slice(0, 2)}
-                      </div>
-                    )}
-                    <span className="absolute -bottom-1 -right-1 bg-[#010A13] border border-[#C8AA6E]/70 rounded px-1 text-[8px] font-bold text-[#F0E6D2]">
-                      {enemy.level}
-                    </span>
-                  </div>
-
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[11px] font-bold text-[#F0E6D2] truncate leading-tight">
-                      {enemy.championName}
+                <div
+                  className="relative shrink-0"
+                  title={`${enemy.championName} (${enemy.position}) • Cấp ${enemy.level}`}
+                >
+                  {enemy.championIconUrl ? (
+                    <img
+                      src={enemy.championIconUrl}
+                      alt={enemy.championName}
+                      style={{ width: m.avatarPx, height: m.avatarPx }}
+                      className="rounded-full border border-[#C8AA6E]/80 object-cover"
+                      draggable={false}
+                    />
+                  ) : (
+                    <div
+                      style={{ width: m.avatarPx, height: m.avatarPx }}
+                      className="rounded-full bg-[#010A13] border border-[#C8AA6E]/80 text-[8px] flex items-center justify-center font-bold"
+                    >
+                      {enemy.position}
                     </div>
-                    <div className="flex items-center gap-1 mt-0.5">
-                      <span className="text-[9px] font-semibold text-[#C8AA6E]">
-                        {enemy.position}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setCosmicOverrides((prev) => ({
-                            ...prev,
-                            [enemy.slotIndex]: !cosmic,
-                          }))
-                        }
-                        title={
-                          cosmic
-                            ? "Đang bật Ngọc Thấu Thị Vũ Trụ (+18 Haste Spell)"
-                            : "Bấm để bật Ngọc Thấu Thị Vũ Trụ (+18 Haste Spell)"
-                        }
-                        className={`px-1 py-0 rounded border inline-flex items-center gap-0.5 text-[8px] font-bold ${
-                          cosmic
-                            ? "bg-[#0AC8B9]/20 border-[#0AC8B9]/70 text-[#0AC8B9]"
-                            : "bg-[#010A13]/70 border-[#C8AA6E]/25 text-[#5B5A56] hover:text-[#C8AA6E]"
-                        }`}
-                      >
-                        <Zap className="w-2.5 h-2.5" />
-                        +18
-                      </button>
-                    </div>
-                  </div>
+                  )}
+                  <span className="absolute -bottom-0.5 -right-0.5 bg-[#010A13]/95 rounded-sm px-[2px] text-[7px] font-bold leading-none text-[#F0E6D2]">
+                    {enemy.level}
+                  </span>
                 </div>
 
-                <div className="flex items-center gap-1 shrink-0">
-                  {renderSlotButton(enemy, "D")}
-                  {renderSlotButton(enemy, "F")}
-                  {renderSlotButton(enemy, "R")}
-                </div>
+                {renderSlotButton(enemy, "D")}
+                {renderSlotButton(enemy, "F")}
+                {renderSlotButton(enemy, "R")}
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCosmicOverrides((prev) => ({
+                      ...prev,
+                      [enemy.slotIndex]: !cosmic,
+                    }))
+                  }
+                  title={
+                    cosmic
+                      ? `${enemy.championName}: Đang bật Thấu Thị Vũ Trụ (+18 Haste Spell)`
+                      : `${enemy.championName}: Bấm bật Thấu Thị Vũ Trụ (+18 Haste Spell)`
+                  }
+                  className={`p-[2px] rounded shrink-0 ${
+                    cosmic
+                      ? "bg-[#0AC8B9]/20 text-[#0AC8B9]"
+                      : "text-[#5B5A56] hover:text-[#C8AA6E]"
+                  }`}
+                >
+                  <Zap className="w-2.5 h-2.5" />
+                </button>
               </div>
             );
           })}

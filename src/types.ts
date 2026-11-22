@@ -44,6 +44,7 @@ export interface TimerAppSettings {
   y: number;
   layout: "vertical" | "horizontal" | string;
   opacity: number;
+  scale?: "S" | "M" | "L" | string;
 }
 
 export interface InitialPayload {

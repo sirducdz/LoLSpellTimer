@@ -49,6 +49,10 @@ pub struct LiveMatchState {
     pub enemies: Vec<EnemyTimerRow>,
 }
 
+fn default_scale() -> String {
+    "S".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TimerAppSettings {
@@ -56,6 +60,8 @@ pub struct TimerAppSettings {
     pub y: i32,
     pub layout: String,
     pub opacity: f64,
+    #[serde(default = "default_scale")]
+    pub scale: String,
 }
 
 impl Default for TimerAppSettings {
@@ -64,7 +70,8 @@ impl Default for TimerAppSettings {
             x: 24,
             y: 140,
             layout: "vertical".to_string(),
-            opacity: 0.92,
+            opacity: 0.85,
+            scale: "S".to_string(),
         }
     }
 }
