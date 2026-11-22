@@ -1,0 +1,19 @@
+# Dữ liệu cache & cài đặt cá nhân
+AppData/
+data/
+
+# Thư mục cài đặt & biên dịch
+node_modules/
+dist/
+dist-ssr/
+src-tauri/target/
+src-tauri/gen/
+
+# Tệp thực thi & log
+*.exe
+*.msi
+*.nsis
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
