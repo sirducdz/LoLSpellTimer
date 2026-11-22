@@ -133,11 +133,19 @@ pub fn parse_allgamedata(json_str: &str, store: &DDragonStore) -> Result<LiveMat
         let display_champ = p
             .get("championName")
             .and_then(|v| v.as_str())
-            .unwrap_or("Unknown");
+            .unwrap_or("")
+            .trim();
         let raw_champ = p
             .get("rawChampionName")
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        let raw_champ_lower = raw_champ.to_lowercase();
+        if display_champ.is_empty()
+            || raw_champ_lower.contains("targetdummy")
+            || raw_champ_lower.contains("practicetool")
+        {
+            continue;
+        }
         let level = p.get("level").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
 
         let champ_key = normalize_champion_key(raw_champ, display_champ);
@@ -254,7 +262,7 @@ pub fn parse_allgamedata(json_str: &str, store: &DDragonStore) -> Result<LiveMat
     }
 
     raw_enemies.sort_by_key(|(rank, _)| *rank);
-    let enemies = raw_enemies
+    let enemies: Vec<EnemyTimerRow> = raw_enemies
         .into_iter()
         .take(5)
         .enumerate()
@@ -263,6 +271,14 @@ pub fn parse_allgamedata(json_str: &str, store: &DDragonStore) -> Result<LiveMat
             row
         })
         .collect();
+
+    if enemies.is_empty() {
+        let mut demo = build_demo_match_state(store);
+        demo.in_game = true;
+        demo.is_demo = true;
+        demo.game_time_secs = game_time_secs;
+        return Ok(demo);
+    }
 
     Ok(LiveMatchState {
         in_game: true,
@@ -378,6 +394,7 @@ mod tests {
             "gameData": { "gameTime": 845.5 },
             "allPlayers": [
                 { "riotId": "Me#VN2", "team": "ORDER", "position": "MIDDLE", "championName": "Ahri", "rawChampionName": "game_character_displayname_Ahri", "level": 11, "items": [], "summonerSpells": {} },
+                { "riotId": "", "team": "CHAOS", "position": "", "championName": "", "rawChampionName": "game_character_displayname_PracticeTool_TargetDummy", "level": 1, "items": [], "summonerSpells": {} },
                 { "riotId": "EnemySup#VN2", "team": "CHAOS", "position": "UTILITY", "championName": "Thresh", "rawChampionName": "game_character_displayname_Thresh", "level": 9, "items": [{"itemID": 3158}], "runes": {"secondaryRuneTree": {"id": 8300}}, "summonerSpells": { "summonerSpellOne": {"rawDisplayName": "SummonerExhaust", "displayName": "Kiệt Sức"}, "summonerSpellTwo": {"rawDisplayName": "SummonerFlash", "displayName": "Tốc Biến"} } },
                 { "riotId": "EnemyTop#VN2", "team": "CHAOS", "position": "TOP", "championName": "Ngộ Không", "rawChampionName": "game_character_displayname_MonkeyKing", "level": 11, "items": [{"itemID": 6676}], "summonerSpells": { "summonerSpellOne": {"rawDisplayName": "SummonerFlash", "displayName": "Tốc Biến"}, "summonerSpellTwo": {"rawDisplayName": "SummonerTeleport", "displayName": "Dịch Chuyển"} } }
             ]

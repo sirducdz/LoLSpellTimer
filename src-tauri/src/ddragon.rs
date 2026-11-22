@@ -333,6 +333,89 @@ pub async fn refresh_ddragon_from_web() -> Result<DDragonStore, String> {
     Ok(store)
 }
 
+fn patch_game_cfg_to_borderless(path: &Path) {
+    if !path.exists() {
+        return;
+    }
+    let Ok(content) = fs::read_to_string(path) else {
+        return;
+    };
+
+    let mut changed = false;
+    let mut out_lines = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.eq_ignore_ascii_case("WindowMode=0") {
+            out_lines.push("WindowMode=2".to_string());
+            changed = true;
+        } else {
+            out_lines.push(line.to_string());
+        }
+    }
+
+    if !changed {
+        return;
+    }
+
+    let was_readonly = fs::metadata(path)
+        .map(|m| m.permissions().readonly())
+        .unwrap_or(false);
+    if was_readonly {
+        if let Ok(meta) = fs::metadata(path) {
+            let mut perms = meta.permissions();
+            perms.set_readonly(false);
+            let _ = fs::set_permissions(path, perms);
+        }
+    }
+
+    let line_ending = if content.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut new_content = out_lines.join(line_ending);
+    if content.ends_with('\n') {
+        new_content.push_str(line_ending);
+    }
+    let _ = fs::write(path, new_content);
+
+    if was_readonly {
+        if let Ok(meta) = fs::metadata(path) {
+            let mut perms = meta.permissions();
+            perms.set_readonly(true);
+            let _ = fs::set_permissions(path, perms);
+        }
+    }
+}
+
+pub fn ensure_lol_borderless_window_mode() {
+    let mut candidates: Vec<PathBuf> = vec![
+        PathBuf::from(r"D:\Riot Games\League of Legends\Config\game.cfg"),
+        PathBuf::from(r"C:\Riot Games\League of Legends\Config\game.cfg"),
+        PathBuf::from(r"D:\LoLQuickHub\AppData\config_backups\master\game.cfg"),
+    ];
+
+    let program_data = std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
+    let installs_path = PathBuf::from(program_data)
+        .join("Riot Games")
+        .join("RiotClientInstalls.json");
+    if let Ok(txt) = fs::read_to_string(installs_path) {
+        if let Ok(val) = serde_json::from_str::<Value>(&txt) {
+            if let Some(assoc) = val.get("associated_client").and_then(|v| v.as_object()) {
+                for (k, _) in assoc {
+                    if k.to_lowercase().contains("league of legends") {
+                        let norm = k.trim().replace('/', r"\").trim_end_matches('\\').to_string();
+                        let cfg = PathBuf::from(norm).join("Config").join("game.cfg");
+                        if !candidates.contains(&cfg) {
+                            candidates.push(cfg);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for p in candidates {
+        patch_game_cfg_to_borderless(&p);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

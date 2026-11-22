@@ -3,7 +3,10 @@ pub mod live_game;
 pub mod models;
 pub mod win_overlay;
 
-use ddragon::{load_cached_ddragon, load_settings, refresh_ddragon_from_web, save_settings, DDragonStore};
+use ddragon::{
+    ensure_lol_borderless_window_mode, load_cached_ddragon, load_settings,
+    refresh_ddragon_from_web, save_settings, DDragonStore,
+};
 use live_game::{build_demo_match_state, fetch_live_or_demo};
 use models::{InitialPayload, LiveMatchState};
 use std::sync::{Arc, Mutex, RwLock};
@@ -180,6 +183,7 @@ pub fn run() {
             cmd_quit_timer,
         ])
         .setup(|app| {
+            ensure_lol_borderless_window_mode();
             setup_tray(app.handle())?;
 
             if let Some(win) = app.get_webview_window("main") {
@@ -211,8 +215,17 @@ pub fn run() {
                         .map(|d| d.clone())
                         .unwrap_or_default();
                     let next_live = fetch_live_or_demo(&store_snap).await;
+                    let is_live_match = next_live.in_game;
                     if let Ok(mut l) = state.live.write() {
                         *l = next_live.clone();
+                    }
+                    if is_live_match {
+                        if let Some(win) = app_poll.get_webview_window("main") {
+                            let win_clone = win.clone();
+                            let _ = win.run_on_main_thread(move || {
+                                apply_noactivate_topmost(&win_clone);
+                            });
+                        }
                     }
                     let _ = app_poll.emit("match-state-updated", next_live);
                     tokio::time::sleep(Duration::from_millis(1500)).await;
