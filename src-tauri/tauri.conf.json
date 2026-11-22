@@ -14,12 +14,14 @@
       {
         "label": "main",
         "title": "LoL Spell Timer",
-        "width": 124,
-        "height": 152,
+        "width": 160,
+        "height": 180,
         "x": 24,
         "y": 140,
         "decorations": false,
         "transparent": true,
+        "shadow": false,
+        "focusable": false,
         "alwaysOnTop": true,
         "resizable": false,
         "skipTaskbar": false

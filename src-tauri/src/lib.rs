@@ -183,6 +183,7 @@ pub fn run() {
             setup_tray(app.handle())?;
 
             if let Some(win) = app.get_webview_window("main") {
+                let _ = win.set_shadow(false);
                 let saved = load_settings();
                 restore_saved_position(&win);
                 resize_for_layout(&win, &saved.layout, false);

@@ -32,7 +32,6 @@ const SCALE_METRICS: Record<
     cdText: string;
     posText: string;
     gapPx: number;
-    padPx: number;
   }
 > = {
   S: {
@@ -41,7 +40,6 @@ const SCALE_METRICS: Record<
     cdText: "text-[9.5px]",
     posText: "text-[8px]",
     gapPx: 2,
-    padPx: 3,
   },
   M: {
     iconPx: 26,
@@ -49,7 +47,6 @@ const SCALE_METRICS: Record<
     cdText: "text-[10.5px]",
     posText: "text-[8.5px]",
     gapPx: 3,
-    padPx: 4,
   },
   L: {
     iconPx: 30,
@@ -57,7 +54,6 @@ const SCALE_METRICS: Record<
     cdText: "text-[11.5px]",
     posText: "text-[9px]",
     gapPx: 3,
-    padPx: 5,
   },
 };
 
@@ -112,7 +108,7 @@ function App() {
   const [layout, setLayout] = useState<"vertical" | "horizontal">("vertical");
   const [scale, setScale] = useState<OverlayScale>("S");
   const [collapsed, setCollapsed] = useState(false);
-  const [opacity, setOpacity] = useState(0.85);
+  const [opacity, setOpacity] = useState(0.9);
   const [timers, setTimers] = useState<Record<string, ActiveTimer>>({});
   const [cosmicOverrides, setCosmicOverrides] = useState<Record<number, boolean>>({});
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -138,7 +134,7 @@ function App() {
           : "S";
       setLayout(l);
       setScale(s);
-      setOpacity(payload.settings.opacity || 0.85);
+      setOpacity(payload.settings.opacity || 0.9);
       prevInGameRef.current = payload.matchState.inGame;
       lastSyncRef.current = {
         gameTimeSecs: payload.matchState.gameTimeSecs,
@@ -170,15 +166,15 @@ function App() {
     };
   }, []);
 
-  // Auto-fit window strictly around the compact micro-overlay content
+  // Auto-fit window using scrollWidth/scrollHeight so edges are never clipped
   useEffect(() => {
     const el = boxRef.current;
     if (!el) return;
 
     const fit = () => {
       const rect = el.getBoundingClientRect();
-      const w = Math.ceil(rect.width);
-      const h = Math.ceil(rect.height);
+      const w = Math.max(Math.ceil(rect.width), Math.ceil(el.scrollWidth));
+      const h = Math.max(Math.ceil(rect.height), Math.ceil(el.scrollHeight));
       if (
         w > 20 &&
         h > 16 &&
@@ -191,9 +187,13 @@ function App() {
     };
 
     fit();
+    const timer = window.setTimeout(fit, 120);
     const ro = new ResizeObserver(fit);
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      window.clearTimeout(timer);
+      ro.disconnect();
+    };
   }, [matchState, layout, scale, collapsed]);
 
   // 250ms tick for crisp countdown & auto-cleanup
@@ -361,7 +361,7 @@ function App() {
   };
 
   const cycleOpacity = async () => {
-    const next = opacity > 0.8 ? 0.68 : opacity > 0.58 ? 0.48 : 0.85;
+    const next = opacity > 0.85 ? 0.72 : opacity > 0.62 ? 0.52 : 0.95;
     setOpacity(next);
     await invoke("cmd_save_opacity", { opacity: next });
   };
@@ -398,14 +398,14 @@ function App() {
         onClick={() => handleTimerClick(enemy, slot)}
         onContextMenu={(e) => handleTimerRightClick(e, enemy, slot)}
         style={{ width: m.iconPx, height: m.iconPx }}
-        className={`relative rounded-[3px] overflow-hidden border transition-transform active:scale-95 shrink-0 ${
+        className={`relative rounded-[3px] overflow-hidden border shadow-[0_1px_4px_rgba(0,0,0,0.95)] transition-transform active:scale-95 shrink-0 ${
           isUrgent
             ? "timer-urgent border-[#E84057]"
             : remaining > 0
             ? "border-[#C8AA6E]"
             : slot === "R"
-            ? "border-[#0AC8B9]/65 hover:border-[#0AC8B9]"
-            : "border-[#C8AA6E]/35 hover:border-[#F0E6D2]"
+            ? "border-[#0AC8B9]/80 hover:border-[#0AC8B9]"
+            : "border-[#C8AA6E]/60 hover:border-[#F0E6D2]"
         } bg-[#010A13]`}
       >
         {iconUrl ? (
@@ -452,22 +452,20 @@ function App() {
   return (
     <div
       ref={boxRef}
-      className="inline-flex flex-col w-max h-max rounded border border-[#C8AA6E]/40 overflow-hidden group"
-      style={{
-        backgroundColor: `rgba(4, 10, 20, ${opacity})`,
-      }}
+      className="inline-flex flex-col items-start p-1 gap-1 bg-transparent select-none group"
+      style={{ opacity }}
     >
-      {/* Ultra-Compact Header (18px) */}
-      <div className="h-[18px] px-1 bg-[#091428]/90 border-b border-[#C8AA6E]/25 flex items-center justify-between gap-1">
+      {/* Floating Transparent Pill Toolbar */}
+      <div className="rounded-full bg-[#06101E]/75 border border-[#C8AA6E]/35 px-1.5 h-[18px] whitespace-nowrap inline-flex items-center gap-1 shadow-[0_1px_4px_rgba(0,0,0,0.85)] opacity-55 group-hover:opacity-100 transition-opacity">
         <div
           onMouseDown={() => {
             draggingRef.current = true;
             invoke("cmd_begin_drag");
           }}
-          className="flex items-center gap-0.5 cursor-move min-w-0 py-0.5"
+          className="inline-flex items-center gap-0.5 cursor-move py-0.5"
           title="Kéo thả để đặt vị trí"
         >
-          <GripVertical className="w-2.5 h-2.5 text-[#C8AA6E]/80 shrink-0" />
+          <GripVertical className="w-2.5 h-2.5 text-[#C8AA6E] shrink-0" />
           <span
             className={`text-[9px] font-bold leading-none ${
               matchState.inGame ? "text-[#0AC8B9]" : "text-[#C8AA6E]"
@@ -477,7 +475,7 @@ function App() {
           </span>
         </div>
 
-        <div className="flex items-center gap-[1px] shrink-0 opacity-60 group-hover:opacity-100 transition-opacity">
+        <div className="inline-flex items-center gap-[1px] shrink-0">
           {!collapsed && (
             <>
               <button
@@ -546,10 +544,10 @@ function App() {
         </div>
       </div>
 
-      {/* Micro Body */}
+      {/* Floating Transparent Icon Grid */}
       {!collapsed && (
         <div
-          style={{ padding: m.padPx, gap: layout === "horizontal" ? m.gapPx + 2 : m.gapPx }}
+          style={{ gap: layout === "horizontal" ? m.gapPx + 3 : m.gapPx }}
           className={layout === "horizontal" ? "flex items-center" : "flex flex-col"}
         >
           {matchState.enemies.map((enemy) => {
@@ -560,7 +558,7 @@ function App() {
                 <div
                   key={enemy.slotIndex}
                   style={{ gap: m.gapPx }}
-                  className="flex flex-col items-center bg-[#091428]/55 rounded px-[2px] py-[2px] border border-[#C8AA6E]/20"
+                  className="flex flex-col items-center bg-[#040A14]/35 rounded px-[2px] py-[2px]"
                 >
                   <div className="w-full flex items-center justify-between gap-1">
                     <div className="flex items-center gap-0.5">
@@ -569,11 +567,14 @@ function App() {
                           src={enemy.championIconUrl}
                           alt={enemy.championName}
                           style={{ width: 14, height: 14 }}
-                          className="rounded-full border border-[#C8AA6E]/70 shrink-0"
+                          className="rounded-full border border-[#C8AA6E]/80 shrink-0 shadow-[0_1px_2px_rgba(0,0,0,0.9)]"
                           draggable={false}
                         />
                       ) : null}
-                      <span className={`${m.posText} font-bold text-[#C8AA6E] leading-none`}>
+                      <span
+                        className={`${m.posText} font-bold text-[#F0E6D2] leading-none`}
+                        style={{ textShadow: "0 1px 2px #000" }}
+                      >
                         {enemy.position}
                       </span>
                     </div>
@@ -591,10 +592,10 @@ function App() {
                           : "Bấm bật Thấu Thị Vũ Trụ (+18 Haste Spell)"
                       }
                       className={`p-[1px] rounded ${
-                        cosmic ? "text-[#0AC8B9]" : "text-[#5B5A56] hover:text-[#C8AA6E]"
+                        cosmic ? "text-[#0AC8B9]" : "text-[#A09B8C]/60 hover:text-[#C8AA6E]"
                       }`}
                     >
-                      <Zap className="w-2.5 h-2.5" />
+                      <Zap className="w-2.5 h-2.5 drop-shadow" />
                     </button>
                   </div>
                   <div style={{ gap: m.gapPx }} className="flex items-center">
@@ -606,7 +607,7 @@ function App() {
               );
             }
 
-            // Micro Vertical Row: [Avatar] [D] [F] [R] [⚡]
+            // Floating Vertical Row on transparent background
             return (
               <div
                 key={enemy.slotIndex}
@@ -622,18 +623,18 @@ function App() {
                       src={enemy.championIconUrl}
                       alt={enemy.championName}
                       style={{ width: m.avatarPx, height: m.avatarPx }}
-                      className="rounded-full border border-[#C8AA6E]/80 object-cover"
+                      className="rounded-full border border-[#C8AA6E]/90 object-cover shadow-[0_1px_4px_rgba(0,0,0,0.95)]"
                       draggable={false}
                     />
                   ) : (
                     <div
                       style={{ width: m.avatarPx, height: m.avatarPx }}
-                      className="rounded-full bg-[#010A13] border border-[#C8AA6E]/80 text-[8px] flex items-center justify-center font-bold"
+                      className="rounded-full bg-[#010A13] border border-[#C8AA6E]/90 text-[8px] flex items-center justify-center font-bold shadow-[0_1px_4px_rgba(0,0,0,0.95)]"
                     >
                       {enemy.position}
                     </div>
                   )}
-                  <span className="absolute -bottom-0.5 -right-0.5 bg-[#010A13]/95 rounded-sm px-[2px] text-[7px] font-bold leading-none text-[#F0E6D2]">
+                  <span className="absolute -bottom-0.5 -right-0.5 bg-[#010A13] border border-[#C8AA6E]/60 rounded-sm px-[2px] text-[7px] font-bold leading-none text-[#F0E6D2]">
                     {enemy.level}
                   </span>
                 </div>
@@ -657,11 +658,11 @@ function App() {
                   }
                   className={`p-[2px] rounded shrink-0 ${
                     cosmic
-                      ? "bg-[#0AC8B9]/20 text-[#0AC8B9]"
-                      : "text-[#5B5A56] hover:text-[#C8AA6E]"
+                      ? "bg-[#0AC8B9]/25 text-[#0AC8B9] shadow-[0_1px_3px_rgba(0,0,0,0.9)]"
+                      : "text-[#A09B8C]/60 hover:text-[#C8AA6E]"
                   }`}
                 >
-                  <Zap className="w-2.5 h-2.5" />
+                  <Zap className="w-2.5 h-2.5 drop-shadow" />
                 </button>
               </div>
             );

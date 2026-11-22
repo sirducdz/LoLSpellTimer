@@ -1,6 +1,6 @@
 use crate::ddragon::{load_settings, save_settings};
 use std::sync::{Arc, Mutex};
-use tauri::WebviewWindow;
+use tauri::{LogicalSize, Size, WebviewWindow};
 use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetWindowLongPtrW, GetWindowRect, SetWindowLongPtrW, SetWindowPos,
@@ -153,33 +153,19 @@ pub fn end_window_drag(window: &WebviewWindow, drag: &SharedDrag) {
 }
 
 pub fn fit_window_logical_size(window: &WebviewWindow, logical_w: f64, logical_h: f64) {
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let phys_w = (logical_w.max(60.0) * scale).round() as i32;
-    let phys_h = (logical_h.max(20.0) * scale).round() as i32;
-
-    if let Ok(raw) = window.hwnd() {
-        let hwnd = HWND(raw.0);
-        unsafe {
-            let _ = SetWindowPos(
-                hwnd,
-                HWND_TOPMOST,
-                0,
-                0,
-                phys_w,
-                phys_h,
-                SWP_NOMOVE | SWP_NOACTIVATE,
-            );
-        }
-    }
+    let w = (logical_w + 6.0).max(80.0);
+    let h = (logical_h + 6.0).max(28.0);
+    let _ = window.set_size(Size::Logical(LogicalSize::new(w, h)));
+    apply_noactivate_topmost(window);
 }
 
 pub fn resize_for_layout(window: &WebviewWindow, layout: &str, collapsed: bool) {
     let (logical_w, logical_h) = if collapsed {
-        (100.0_f64, 24.0_f64)
+        (120.0_f64, 28.0_f64)
     } else if layout == "horizontal" {
-        (360.0_f64, 62.0_f64)
+        (400.0_f64, 76.0_f64)
     } else {
-        (124.0_f64, 152.0_f64)
+        (160.0_f64, 180.0_f64)
     };
 
     fit_window_logical_size(window, logical_w, logical_h);
