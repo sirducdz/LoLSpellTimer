@@ -82,6 +82,29 @@ fn position_order(pos: &str) -> (usize, &'static str) {
     }
 }
 
+pub fn compute_auto_sync_room(participant_tokens: &[String], my_team: &str) -> Option<String> {
+    let team_trimmed = my_team.trim().to_uppercase();
+    if team_trimmed.is_empty() || participant_tokens.is_empty() {
+        return None;
+    }
+    let mut sorted = participant_tokens.to_vec();
+    sorted.sort();
+    let payload = format!(
+        "LoLSpellTimer-SquadSync-v1|{}||MYTEAM={}",
+        sorted.join("|"),
+        team_trimmed
+    );
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in payload.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xff51afd7ed558ccd);
+    h ^= h >> 33;
+    Some(format!("m{:016x}", h))
+}
+
 pub fn parse_allgamedata(json_str: &str, store: &DDragonStore) -> Result<LiveMatchState, String> {
     let root: Value = serde_json::from_str(json_str).map_err(|e| e.to_string())?;
     let game_time_secs = root
@@ -114,6 +137,40 @@ pub fn parse_allgamedata(json_str: &str, store: &DDragonStore) -> Result<LiveMat
             break;
         }
     }
+
+    let mut participant_tokens: Vec<String> = Vec::new();
+    for p in all_players {
+        let team = p.get("team").and_then(|v| v.as_str()).unwrap_or("").trim();
+        let display_champ = p
+            .get("championName")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        let raw_champ = p
+            .get("rawChampionName")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let raw_champ_lower = raw_champ.to_lowercase();
+        if display_champ.is_empty()
+            || raw_champ_lower.contains("targetdummy")
+            || raw_champ_lower.contains("practicetool")
+        {
+            continue;
+        }
+        let team_up = team.to_uppercase();
+        let champ_key = normalize_champion_key(raw_champ, display_champ);
+        let is_bot = p.get("isBot").and_then(|v| v.as_bool()).unwrap_or(false);
+        let riot_id_raw = p.get("riotId").and_then(|v| v.as_str()).unwrap_or("").trim();
+        let identity = if is_bot || riot_id_raw.is_empty() {
+            "bot".to_string()
+        } else {
+            riot_id_raw.to_lowercase()
+        };
+        if !team_up.is_empty() && !champ_key.is_empty() {
+            participant_tokens.push(format!("{}:{}:{}", team_up, champ_key, identity));
+        }
+    }
+    let auto_sync_room = compute_auto_sync_room(&participant_tokens, &my_team);
 
     let mut raw_enemies: Vec<(usize, EnemyTimerRow)> = Vec::new();
     for p in all_players {
@@ -285,6 +342,7 @@ pub fn parse_allgamedata(json_str: &str, store: &DDragonStore) -> Result<LiveMat
         is_demo: false,
         game_time_secs,
         ddragon_version: store.version.clone(),
+        auto_sync_room,
         enemies,
     })
 }
@@ -343,6 +401,7 @@ pub fn build_demo_match_state(store: &DDragonStore) -> LiveMatchState {
         is_demo: true,
         game_time_secs: 0.0,
         ddragon_version: store.version.clone(),
+        auto_sync_room: None,
         enemies,
     }
 }
@@ -413,5 +472,45 @@ mod tests {
         assert!(parsed.enemies[1].has_inspiration_rune);
         // Sup has Ionian Boots (10) + Inspiration (18) = 28 -> Flash 234s
         assert_eq!(parsed.enemies[1].spell_f.effective_cd, 234.0);
+    }
+
+    #[test]
+    fn test_auto_sync_room_matches_allies_across_locales_and_separates_enemies() {
+        let store = DDragonStore::default();
+        let make_sample = |active_riot_id: &str, wukong_disp: &str, bot_disp: &str, bot_riot: &str| {
+            format!(
+                r#"{{
+                "activePlayer": {{ "riotId": "{active_riot_id}", "summonerName": "Player" }},
+                "gameData": {{ "gameTime": 120.0 }},
+                "allPlayers": [
+                    {{ "riotId": "Ally1#VN2", "isBot": false, "team": "ORDER", "position": "MIDDLE", "championName": "Ahri", "rawChampionName": "game_character_displayname_Ahri", "level": 6 }},
+                    {{ "riotId": "Ally2#KR1", "isBot": false, "team": "ORDER", "position": "TOP", "championName": "{wukong_disp}", "rawChampionName": "game_character_displayname_MonkeyKing", "level": 6 }},
+                    {{ "riotId": "{bot_riot}", "isBot": true, "team": "CHAOS", "position": "JUNGLE", "championName": "{bot_disp}", "rawChampionName": "game_character_displayname_LeeSin", "level": 5 }},
+                    {{ "riotId": "Enemy1#VN2", "isBot": false, "team": "CHAOS", "position": "BOTTOM", "championName": "Kaisa", "rawChampionName": "game_character_displayname_Kaisa", "level": 6 }},
+                    {{ "riotId": "", "team": "CHAOS", "position": "", "championName": "", "rawChampionName": "game_character_displayname_PracticeTool_TargetDummy", "level": 1 }}
+                ]
+            }}"#
+            )
+        };
+
+        let ally1_vi = parse_allgamedata(
+            &make_sample("Ally1#VN2", "Ngộ Không", "Máy Lee Sin", "Lee Sin Bot"),
+            &store,
+        )
+        .unwrap();
+        let ally2_en = parse_allgamedata(
+            &make_sample("Ally2#KR1", "Wukong", "Lee Sin Bot", "Máy Lee Sin"),
+            &store,
+        )
+        .unwrap();
+        let enemy_view = parse_allgamedata(
+            &make_sample("Enemy1#VN2", "Wukong", "Lee Sin Bot", "Lee Sin Bot"),
+            &store,
+        )
+        .unwrap();
+
+        assert!(ally1_vi.auto_sync_room.is_some());
+        assert_eq!(ally1_vi.auto_sync_room, ally2_en.auto_sync_room);
+        assert_ne!(ally1_vi.auto_sync_room, enemy_view.auto_sync_room);
     }
 }

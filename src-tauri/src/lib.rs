@@ -4,11 +4,11 @@ pub mod models;
 pub mod win_overlay;
 
 use ddragon::{
-    ensure_lol_borderless_window_mode, load_cached_ddragon, load_settings,
+    ensure_lol_borderless_window_mode, generate_squad_code, load_cached_ddragon, load_settings,
     refresh_ddragon_from_web, save_settings, DDragonStore,
 };
 use live_game::{build_demo_match_state, fetch_live_or_demo};
-use models::{InitialPayload, LiveMatchState};
+use models::{InitialPayload, LiveMatchState, TimerAppSettings};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
@@ -86,6 +86,32 @@ fn cmd_end_drag(window: WebviewWindow, state: State<'_, TimerSharedState>) {
 fn cmd_copy_text(text: String) -> Result<(), String> {
     let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     cb.set_text(text).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn cmd_read_clipboard() -> Result<String, String> {
+    let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    cb.get_text().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn cmd_save_sync_settings(sync_enabled: bool, squad_code: String) -> TimerAppSettings {
+    let mut s = load_settings();
+    let cleaned: String = squad_code
+        .trim()
+        .to_uppercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(10)
+        .collect();
+    s.sync_enabled = sync_enabled;
+    s.squad_code = if cleaned == "NEW" || cleaned.len() < 4 {
+        generate_squad_code()
+    } else {
+        cleaned
+    };
+    save_settings(&s);
+    s
 }
 
 #[tauri::command]
@@ -180,6 +206,8 @@ pub fn run() {
             cmd_update_drag,
             cmd_end_drag,
             cmd_copy_text,
+            cmd_read_clipboard,
+            cmd_save_sync_settings,
             cmd_quit_timer,
         ])
         .setup(|app| {

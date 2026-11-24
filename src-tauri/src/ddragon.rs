@@ -128,12 +128,37 @@ pub fn resolve_app_data_dir() -> PathBuf {
     dir
 }
 
+pub fn generate_squad_code() -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x9e3779b97f4a7c15);
+    let mut state = nanos ^ ((std::process::id() as u64).wrapping_mul(0xbf58476d1ce4e5b9));
+    let mut out = String::with_capacity(5);
+    for _ in 0..5 {
+        state = state.wrapping_add(0x9e3779b97f4a7c15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+        z ^= z >> 31;
+        let idx = (z as usize) % ALPHABET.len();
+        out.push(ALPHABET[idx] as char);
+    }
+    out
+}
+
 pub fn load_settings() -> TimerAppSettings {
     let p = resolve_app_data_dir().join("timer_settings.json");
-    fs::read_to_string(p)
+    let mut settings: TimerAppSettings = fs::read_to_string(p)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if settings.squad_code.trim().len() < 4 {
+        settings.squad_code = generate_squad_code();
+        save_settings(&settings);
+    }
+    settings
 }
 
 pub fn save_settings(settings: &TimerAppSettings) {

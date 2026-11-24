@@ -9,16 +9,21 @@ import {
   GripVertical,
   Minus,
   Plus,
+  RefreshCw,
   Rows3,
+  Users,
   X,
   Zap,
 } from "lucide-react";
-import { EnemyTimerRow, InitialPayload, LiveMatchState } from "./types";
+import { SquadSyncClient, SyncStatus, SyncWirePayload } from "./squadSync";
+import { EnemyTimerRow, InitialPayload, LiveMatchState, TimerAppSettings } from "./types";
 
 interface ActiveTimer {
   endEpochMs: number;
   totalSecs: number;
   minusFlashUntilMs: number;
+  syncFlashUntilMs: number;
+  remoteStartedAtMs: number;
 }
 
 type TimerSlotKey = "D" | "F" | "R";
@@ -103,6 +108,40 @@ function shortSpellLabel(spellId: string, nameVi: string): string {
   }
 }
 
+function getEnemySyncKey(enemies: EnemyTimerRow[], enemy: EnemyTimerRow): string {
+  const idLower = enemy.championId.toLowerCase();
+  let occ = 0;
+  for (const e of enemies) {
+    if (e.slotIndex === enemy.slotIndex) break;
+    if (e.championId.toLowerCase() === idLower) occ += 1;
+  }
+  return `${idLower}#${occ}`;
+}
+
+function findEnemyBySyncKey(
+  enemies: EnemyTimerRow[],
+  enemyKey: string
+): EnemyTimerRow | undefined {
+  for (const e of enemies) {
+    if (getEnemySyncKey(enemies, e) === enemyKey) return e;
+  }
+  return undefined;
+}
+
+function parseTargetSlot(
+  enemies: EnemyTimerRow[],
+  target: string
+): { enemy: EnemyTimerRow; slot: TimerSlotKey } | null {
+  const idx = target.lastIndexOf(":");
+  if (idx <= 0) return null;
+  const enemyKey = target.slice(0, idx);
+  const slot = target.slice(idx + 1) as TimerSlotKey;
+  if (slot !== "D" && slot !== "F" && slot !== "R") return null;
+  const enemy = findEnemyBySyncKey(enemies, enemyKey);
+  if (!enemy) return null;
+  return { enemy, slot };
+}
+
 function App() {
   const [matchState, setMatchState] = useState<LiveMatchState | null>(null);
   const [layout, setLayout] = useState<"vertical" | "horizontal">("vertical");
@@ -113,6 +152,11 @@ function App() {
   const [cosmicOverrides, setCosmicOverrides] = useState<Record<number, boolean>>({});
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [copiedNotice, setCopiedNotice] = useState(false);
+  const [syncEnabled, setSyncEnabled] = useState(true);
+  const [squadCode, setSquadCode] = useState("");
+  const [showSyncPanel, setShowSyncPanel] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>({ connected: false, peerCount: 0 });
+  const [syncNotice, setSyncNotice] = useState("");
 
   const boxRef = useRef<HTMLDivElement | null>(null);
   const lastFitRef = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
@@ -123,6 +167,25 @@ function App() {
     atEpochMs: Date.now(),
   });
   const draggingRef = useRef(false);
+  const timersRef = useRef(timers);
+  timersRef.current = timers;
+  const cosmicRef = useRef(cosmicOverrides);
+  cosmicRef.current = cosmicOverrides;
+  const matchStateRef = useRef(matchState);
+  matchStateRef.current = matchState;
+  const syncClientRef = useRef<SquadSyncClient | null>(null);
+  const noticeTimerRef = useRef<number | null>(null);
+
+  const flashSyncNotice = (msg: string) => {
+    setSyncNotice(msg);
+    if (noticeTimerRef.current !== null) {
+      window.clearTimeout(noticeTimerRef.current);
+    }
+    noticeTimerRef.current = window.setTimeout(() => {
+      setSyncNotice("");
+      noticeTimerRef.current = null;
+    }, 1400);
+  };
 
   useEffect(() => {
     invoke<InitialPayload>("cmd_get_initial_state").then((payload) => {
@@ -135,6 +198,8 @@ function App() {
       setLayout(l);
       setScale(s);
       setOpacity(payload.settings.opacity || 0.9);
+      setSyncEnabled(payload.settings.syncEnabled ?? true);
+      setSquadCode((payload.settings.squadCode || "").toUpperCase());
       prevInGameRef.current = payload.matchState.inGame;
       lastSyncRef.current = {
         gameTimeSecs: payload.matchState.gameTimeSecs,
@@ -166,6 +231,143 @@ function App() {
     };
   }, []);
 
+  const inLiveAutoMatch = Boolean(
+    matchState?.inGame && !matchState.isDemo && matchState.autoSyncRoom
+  );
+  const activeRoomKey = useMemo(() => {
+    if (!syncEnabled) return null;
+    if (inLiveAutoMatch && matchState?.autoSyncRoom) {
+      return `auto_${matchState.autoSyncRoom}`;
+    }
+    if (squadCode) {
+      return `squad_${squadCode.toUpperCase()}`;
+    }
+    return null;
+  }, [syncEnabled, inLiveAutoMatch, matchState?.autoSyncRoom, squadCode]);
+
+  useEffect(() => {
+    if (!activeRoomKey) {
+      syncClientRef.current = null;
+      setSyncStatus({ connected: false, peerCount: 0 });
+      return;
+    }
+
+    const client = new SquadSyncClient(
+      activeRoomKey,
+      (msg: SyncWirePayload) => {
+        const ms = matchStateRef.current;
+        if (!ms) return;
+        const cur = Date.now();
+
+        if (msg.op === "set") {
+          const parsed = parseTargetSlot(ms.enemies, msg.target);
+          if (!parsed) return;
+          if (msg.remainingMs <= 500) return;
+          const key = `${parsed.enemy.slotIndex}-${parsed.slot}`;
+          setTimers((prev) => ({
+            ...prev,
+            [key]: {
+              endEpochMs: cur + msg.remainingMs,
+              totalSecs: msg.totalSecs,
+              minusFlashUntilMs: msg.isMinus5 ? cur + 650 : 0,
+              syncFlashUntilMs: cur + 900,
+              remoteStartedAtMs: msg.isStart ? cur : 0,
+            },
+          }));
+        } else if (msg.op === "reset") {
+          const parsed = parseTargetSlot(ms.enemies, msg.target);
+          if (!parsed) return;
+          const key = `${parsed.enemy.slotIndex}-${parsed.slot}`;
+          setTimers((prev) => {
+            if (!prev[key]) return prev;
+            const copy = { ...prev };
+            delete copy[key];
+            return copy;
+          });
+        } else if (msg.op === "cosmic") {
+          const enemy = findEnemyBySyncKey(ms.enemies, msg.enemyKey);
+          if (!enemy) return;
+          setCosmicOverrides((prev) => ({
+            ...prev,
+            [enemy.slotIndex]: msg.enabled,
+          }));
+        } else if (msg.op === "snapshot") {
+          if (msg.timers.length > 0) {
+            setTimers((prev) => {
+              let changed = false;
+              const next = { ...prev };
+              for (const item of msg.timers) {
+                if (item.remainingMs <= 1000) continue;
+                const parsed = parseTargetSlot(ms.enemies, item.target);
+                if (!parsed) continue;
+                const key = `${parsed.enemy.slotIndex}-${parsed.slot}`;
+                if (!next[key] || next[key].endEpochMs <= cur) {
+                  next[key] = {
+                    endEpochMs: cur + item.remainingMs,
+                    totalSecs: item.totalSecs,
+                    minusFlashUntilMs: 0,
+                    syncFlashUntilMs: cur + 900,
+                    remoteStartedAtMs: 0,
+                  };
+                  changed = true;
+                }
+              }
+              return changed ? next : prev;
+            });
+          }
+          const cosmicEntries = Object.entries(msg.cosmic);
+          if (cosmicEntries.length > 0) {
+            setCosmicOverrides((prev) => {
+              let changed = false;
+              const next = { ...prev };
+              for (const [enemyKey, enabled] of cosmicEntries) {
+                const enemy = findEnemyBySyncKey(ms.enemies, enemyKey);
+                if (!enemy) continue;
+                if (next[enemy.slotIndex] === undefined) {
+                  next[enemy.slotIndex] = enabled;
+                  changed = true;
+                }
+              }
+              return changed ? next : prev;
+            });
+          }
+        }
+      },
+      (status) => setSyncStatus(status),
+      () => {
+        const ms = matchStateRef.current;
+        const cur = Date.now();
+        const snapTimers: Array<{ target: string; remainingMs: number; totalSecs: number }> = [];
+        const snapCosmic: Record<string, boolean> = {};
+        if (ms) {
+          for (const enemy of ms.enemies) {
+            const eKey = getEnemySyncKey(ms.enemies, enemy);
+            if (cosmicRef.current[enemy.slotIndex] !== undefined) {
+              snapCosmic[eKey] = cosmicRef.current[enemy.slotIndex];
+            }
+            for (const slot of ["D", "F", "R"] as TimerSlotKey[]) {
+              const t = timersRef.current[`${enemy.slotIndex}-${slot}`];
+              if (t && t.endEpochMs > cur + 1000) {
+                snapTimers.push({
+                  target: `${eKey}:${slot}`,
+                  remainingMs: t.endEpochMs - cur,
+                  totalSecs: t.totalSecs,
+                });
+              }
+            }
+          }
+        }
+        return { timers: snapTimers, cosmic: snapCosmic };
+      }
+    );
+
+    syncClientRef.current = client;
+    return () => {
+      syncClientRef.current = null;
+      client.destroy();
+    };
+  }, [activeRoomKey]);
+
   // Auto-fit window using scrollWidth/scrollHeight so edges are never clipped
   useEffect(() => {
     const el = boxRef.current;
@@ -194,7 +396,7 @@ function App() {
       window.clearTimeout(timer);
       ro.disconnect();
     };
-  }, [matchState, layout, scale, collapsed]);
+  }, [matchState, layout, scale, collapsed, showSyncPanel]);
 
   // 250ms tick for crisp countdown & auto-cleanup
   useEffect(() => {
@@ -264,34 +466,91 @@ function App() {
     const key = `${enemy.slotIndex}-${slot}`;
     const effCd = getEffectiveSpellCd(enemy, slot);
     const cur = Date.now();
+    const ms = matchStateRef.current;
+    const target = ms ? `${getEnemySyncKey(ms.enemies, enemy)}:${slot}` : "";
 
-    setTimers((prev) => {
-      const existing = prev[key];
-      if (!existing || existing.endEpochMs <= cur) {
+    const existing = timersRef.current[key];
+    // Collision guard: teammate just started this timer (< 2.5s ago), confirm without subtracting -5s
+    if (
+      existing &&
+      existing.endEpochMs > cur &&
+      existing.remoteStartedAtMs > 0 &&
+      cur - existing.remoteStartedAtMs < 2500
+    ) {
+      setTimers((prev) => {
+        const current = prev[key];
+        if (!current) return prev;
         return {
           ...prev,
-          [key]: {
-            endEpochMs: cur + effCd * 1000,
-            totalSecs: effCd,
-            minusFlashUntilMs: 0,
-          },
+          [key]: { ...current, remoteStartedAtMs: 0 },
         };
+      });
+      return;
+    }
+
+    if (!existing || existing.endEpochMs <= cur) {
+      const remainingMs = effCd * 1000;
+      setTimers((prev) => ({
+        ...prev,
+        [key]: {
+          endEpochMs: cur + remainingMs,
+          totalSecs: effCd,
+          minusFlashUntilMs: 0,
+          syncFlashUntilMs: 0,
+          remoteStartedAtMs: 0,
+        },
+      }));
+      if (target) {
+        syncClientRef.current?.send({
+          op: "set",
+          target,
+          remainingMs,
+          totalSecs: effCd,
+          isStart: true,
+          isMinus5: false,
+        });
       }
-      const nextEnd = existing.endEpochMs - 5000;
-      if (nextEnd <= cur) {
+      return;
+    }
+
+    const nextEnd = existing.endEpochMs - 5000;
+    if (nextEnd <= cur) {
+      setTimers((prev) => {
+        if (!prev[key]) return prev;
         const copy = { ...prev };
         delete copy[key];
         return copy;
+      });
+      if (target) {
+        syncClientRef.current?.send({ op: "reset", target });
       }
+      return;
+    }
+
+    const remainingMs = nextEnd - cur;
+    setTimers((prev) => {
+      const current = prev[key];
+      if (!current) return prev;
       return {
         ...prev,
         [key]: {
-          ...existing,
+          ...current,
           endEpochMs: nextEnd,
           minusFlashUntilMs: cur + 650,
+          remoteStartedAtMs: 0,
         },
       };
     });
+    if (target) {
+      syncClientRef.current?.send({
+        op: "set",
+        target,
+        remainingMs,
+        totalSecs: existing.totalSecs,
+        isStart: false,
+        isMinus5: true,
+      });
+    }
   };
 
   const handleTimerRightClick = (
@@ -301,12 +560,88 @@ function App() {
   ) => {
     e.preventDefault();
     const key = `${enemy.slotIndex}-${slot}`;
+    const hadTimer = Boolean(timersRef.current[key]);
     setTimers((prev) => {
       if (!prev[key]) return prev;
       const copy = { ...prev };
       delete copy[key];
       return copy;
     });
+    if (hadTimer && matchStateRef.current) {
+      const target = `${getEnemySyncKey(matchStateRef.current.enemies, enemy)}:${slot}`;
+      syncClientRef.current?.send({ op: "reset", target });
+    }
+  };
+
+  const handleToggleCosmic = (enemy: EnemyTimerRow) => {
+    const nextVal = !isCosmicEnabled(enemy);
+    setCosmicOverrides((prev) => ({
+      ...prev,
+      [enemy.slotIndex]: nextVal,
+    }));
+    if (matchStateRef.current) {
+      const enemyKey = getEnemySyncKey(matchStateRef.current.enemies, enemy);
+      syncClientRef.current?.send({
+        op: "cosmic",
+        enemyKey,
+        enabled: nextVal,
+      });
+    }
+  };
+
+  const handleToggleSyncEnabled = async () => {
+    const next = !syncEnabled;
+    setSyncEnabled(next);
+    const saved = await invoke<TimerAppSettings>("cmd_save_sync_settings", {
+      syncEnabled: next,
+      squadCode,
+    });
+    setSyncEnabled(saved.syncEnabled ?? next);
+    if (saved.squadCode) setSquadCode(saved.squadCode.toUpperCase());
+  };
+
+  const handleCopySquadCode = async () => {
+    if (!squadCode) return;
+    await invoke("cmd_copy_text", { text: squadCode });
+    flashSyncNotice("Đã copy!");
+  };
+
+  const handlePasteSquadCode = async () => {
+    try {
+      const raw = await invoke<string>("cmd_read_clipboard");
+      const cleaned = raw
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, "")
+        .slice(0, 10);
+      if (cleaned.length < 4) {
+        flashSyncNotice("Mã lỗi!");
+        return;
+      }
+      const saved = await invoke<TimerAppSettings>("cmd_save_sync_settings", {
+        syncEnabled: true,
+        squadCode: cleaned,
+      });
+      setSyncEnabled(saved.syncEnabled ?? true);
+      setSquadCode((saved.squadCode || cleaned).toUpperCase());
+      flashSyncNotice("Đã nối!");
+    } catch {
+      flashSyncNotice("Mã lỗi!");
+    }
+  };
+
+  const handleRegenerateSquadCode = async () => {
+    const saved = await invoke<TimerAppSettings>("cmd_save_sync_settings", {
+      syncEnabled: true,
+      squadCode: "NEW",
+    });
+    setSyncEnabled(saved.syncEnabled ?? true);
+    if (saved.squadCode) {
+      const code = saved.squadCode.toUpperCase();
+      setSquadCode(code);
+      await invoke("cmd_copy_text", { text: code });
+      flashSyncNotice("Mã mới!");
+    }
   };
 
   const handleCopyTimers = async () => {
@@ -374,6 +709,7 @@ function App() {
     const remaining = active ? Math.max(0, Math.ceil((active.endEpochMs - nowMs) / 1000)) : 0;
     const isUrgent = remaining > 0 && remaining <= 10;
     const showMinus5 = active && active.minusFlashUntilMs > nowMs;
+    const isSyncFlashing = Boolean(active && active.syncFlashUntilMs > nowMs);
     const effCd = getEffectiveSpellCd(enemy, slot);
 
     const iconUrl =
@@ -399,6 +735,8 @@ function App() {
         onContextMenu={(e) => handleTimerRightClick(e, enemy, slot)}
         style={{ width: m.iconPx, height: m.iconPx }}
         className={`relative rounded-[3px] overflow-hidden border shadow-[0_1px_4px_rgba(0,0,0,0.95)] transition-transform active:scale-95 shrink-0 ${
+          isSyncFlashing ? "ring-1 ring-[#0AC8B9] " : ""
+        }${
           isUrgent
             ? "timer-urgent border-[#E84057]"
             : remaining > 0
@@ -521,6 +859,36 @@ function App() {
               >
                 <Eye className="w-2.5 h-2.5" />
               </button>
+
+              <button
+                type="button"
+                onClick={() => setShowSyncPanel((v) => !v)}
+                title={
+                  !syncEnabled
+                    ? "Đồng bộ tổ đội: Đang TẮT"
+                    : syncStatus.peerCount > 0
+                    ? `Đang đồng bộ cùng ${syncStatus.peerCount} đồng đội`
+                    : syncStatus.connected
+                    ? "Đồng bộ tổ đội: Sẵn sàng"
+                    : "Đồng bộ tổ đội: Đang kết nối..."
+                }
+                className={`p-0.5 rounded hover:bg-[#C8AA6E]/20 inline-flex items-center gap-[1px] ${
+                  !syncEnabled
+                    ? "text-[#A09B8C]/45"
+                    : syncStatus.peerCount > 0
+                    ? "text-[#0AC8B9]"
+                    : syncStatus.connected
+                    ? "text-[#C8AA6E]"
+                    : "text-[#A09B8C]/60"
+                }`}
+              >
+                <Users className="w-2.5 h-2.5" />
+                {syncEnabled && syncStatus.peerCount > 0 && (
+                  <span className="text-[7.5px] font-black leading-none">
+                    {syncStatus.peerCount + 1}
+                  </span>
+                )}
+              </button>
             </>
           )}
 
@@ -543,6 +911,60 @@ function App() {
           </button>
         </div>
       </div>
+
+      {/* Compact Squad Sync Bar */}
+      {showSyncPanel && !collapsed && (
+        <div className="rounded bg-[#06101E]/90 border border-[#C8AA6E]/45 px-1.5 h-[20px] whitespace-nowrap inline-flex items-center gap-1 shadow-[0_2px_6px_rgba(0,0,0,0.9)] text-[8.5px]">
+          <button
+            type="button"
+            onClick={handleToggleSyncEnabled}
+            title={syncEnabled ? "Bấm để tắt đồng bộ" : "Bấm để bật đồng bộ"}
+            className={`px-1 rounded font-black leading-tight ${
+              syncEnabled
+                ? "bg-[#0AC8B9]/20 text-[#0AC8B9]"
+                : "bg-[#A09B8C]/15 text-[#A09B8C]"
+            }`}
+          >
+            SYNC
+          </button>
+
+          {inLiveAutoMatch ? (
+            <span className="text-[#F0E6D2] font-bold">
+              AUTO •{" "}
+              <span className="text-[#0AC8B9]">
+                {syncStatus.peerCount > 0 ? `+${syncStatus.peerCount} bồ` : "Theo phe"}
+              </span>
+            </span>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={handleCopySquadCode}
+                title="Bấm copy mã phòng để gửi bạn bè ghép thử"
+                className="font-mono font-bold text-[#F0E6D2] hover:text-[#0AC8B9] bg-[#C8AA6E]/15 px-1 rounded leading-tight"
+              >
+                {syncNotice || squadCode || "-----"}
+              </button>
+              <button
+                type="button"
+                onClick={handlePasteSquadCode}
+                title="Copy mã từ bạn bè rồi bấm nút này để vào phòng"
+                className="px-1 rounded bg-[#0AC8B9]/20 text-[#0AC8B9] hover:bg-[#0AC8B9]/35 font-bold leading-tight"
+              >
+                Dán
+              </button>
+              <button
+                type="button"
+                onClick={handleRegenerateSquadCode}
+                title="Tạo mã phòng mới & copy"
+                className="p-0.5 rounded hover:bg-[#C8AA6E]/20 text-[#C8AA6E]"
+              >
+                <RefreshCw className="w-2.5 h-2.5" />
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Floating Transparent Icon Grid */}
       {!collapsed && (
@@ -580,12 +1002,7 @@ function App() {
                     </div>
                     <button
                       type="button"
-                      onClick={() =>
-                        setCosmicOverrides((prev) => ({
-                          ...prev,
-                          [enemy.slotIndex]: !cosmic,
-                        }))
-                      }
+                      onClick={() => handleToggleCosmic(enemy)}
                       title={
                         cosmic
                           ? "Thấu Thị Vũ Trụ (+18 Haste Spell): ĐANG BẬT"
@@ -645,12 +1062,7 @@ function App() {
 
                 <button
                   type="button"
-                  onClick={() =>
-                    setCosmicOverrides((prev) => ({
-                      ...prev,
-                      [enemy.slotIndex]: !cosmic,
-                    }))
-                  }
+                  onClick={() => handleToggleCosmic(enemy)}
                   title={
                     cosmic
                       ? `${enemy.championName}: Đang bật Thấu Thị Vũ Trụ (+18 Haste Spell)`

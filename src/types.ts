@@ -36,6 +36,7 @@ export interface LiveMatchState {
   isDemo: boolean;
   gameTimeSecs: number;
   ddragonVersion: string;
+  autoSyncRoom?: string | null;
   enemies: EnemyTimerRow[];
 }
 
@@ -45,6 +46,8 @@ export interface TimerAppSettings {
   layout: "vertical" | "horizontal" | string;
   opacity: number;
   scale?: "S" | "M" | "L" | string;
+  syncEnabled?: boolean;
+  squadCode?: string;
 }
 
 export interface InitialPayload {
